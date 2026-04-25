@@ -69,3 +69,26 @@ async def full_pipeline(file: UploadFile = File(...)):
         # Cleanup
         if os.path.exists(temp_image_path):
             os.remove(temp_image_path)
+
+@app.post("/internal/chat")
+async def internal_chat(payload: dict):
+    """
+    Handles pure conversational text without processing an image.
+    Pings the local Ollama instance for a conversational response.
+    """
+    user_text = payload.get("text", "")
+    
+    prompt_text = (
+        "You are OmniVision, a helpful and friendly accessibility assistant for a visually impaired user. "
+        "Engage in a brief, conversational response to the user's message. "
+        f"User Message: {user_text}"
+    )
+    
+    ollama_client = ollama.Client(host='http://localhost:11434')
+    response = ollama_client.generate(
+        model='llava:v1.6',
+        prompt=prompt_text,
+        options={'temperature': 0.7, 'top_k': 40}
+    )
+    
+    return JSONResponse(content={"text": response.get('response', '')})

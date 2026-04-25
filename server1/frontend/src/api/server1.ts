@@ -31,3 +31,19 @@ export const sendGesture = async (frames: any[]) => {
 
   return response.json();
 };
+
+export const sendChat = async (text: string) => {
+  const response = await fetch(`${BASE_URL}/api/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Chat API error: ${response.statusText}`);
+  }
+
+  return response.json();
+};

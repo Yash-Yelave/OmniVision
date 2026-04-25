@@ -1,20 +1,111 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Mic, Send, Activity } from 'lucide-react';
-import { analyzeImage } from '../api/server1';
+import { analyzeImage, sendChat } from '../api/server1';
 import '../styles/global.css';
+
+declare global {
+  interface Window {
+    SpeechRecognition: any;
+    webkitSpeechRecognition: any;
+  }
+}
 
 export const AudioPage: React.FC = () => {
   const [currentLang, setCurrentLang] = useState<'en'|'hi'|'mr'>('en');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const [responseText, setResponseText] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  
+  const recognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = false;
+      recognitionRef.current.interimResults = false;
+      
+      recognitionRef.current.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        setResponseText(`You: "${transcript}"`);
+        setIsListening(false);
+        handleUserText(transcript);
+      };
+      
+      recognitionRef.current.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        setIsListening(false);
+        if (event.error === 'not-allowed') {
+          setResponseText("Microphone access denied or insecure connection. (HTTPS required on mobile).");
+        } else if (event.error === 'network') {
+          setResponseText("Network error during speech recognition.");
+        } else if (event.error === 'no-speech') {
+          setResponseText("No speech detected. Please try again.");
+        } else {
+          setResponseText(`Speech error: ${event.error}. Try again.`);
+        }
+      };
+      
+      recognitionRef.current.onend = () => {
+        setIsListening(false);
+      };
+      
+    } else {
+      setResponseText("Speech recognition not supported in this browser.");
+    }
+  }, []);
+
+  const startListening = () => {
+    if (recognitionRef.current && !isProcessing) {
+      if (currentLang === 'hi') recognitionRef.current.lang = 'hi-IN';
+      else if (currentLang === 'mr') recognitionRef.current.lang = 'mr-IN';
+      else recognitionRef.current.lang = 'en-US';
+      
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+        setResponseText("Listening...");
+      } catch (err) {
+        console.error("Could not start recognition", err);
+      }
+    }
+  };
+
+  const speak = (text: string, callback?: () => void) => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      if (currentLang === 'hi') utterance.lang = 'hi-IN';
+      else if (currentLang === 'mr') utterance.lang = 'mr-IN';
+      else utterance.lang = 'en-US';
+      
+      utterance.onend = () => {
+        if (callback) {
+          callback();
+        } else {
+          // Continuous Mode: Auto-start listening after reading output
+          setTimeout(() => {
+            startListening();
+          }, 800);
+        }
+      };
+      
+      window.speechSynthesis.speak(utterance);
+    } else {
+      if (callback) {
+        callback();
+      } else {
+        setTimeout(() => startListening(), 800);
+      }
+    }
+  };
 
   const captureAndAnalyze = async () => {
     setIsProcessing(true);
-    setResponseText("Capturing and analyzing scene...");
+    setResponseText((prev) => prev || "Capturing and analyzing scene...");
     
     try {
-      // 1. Headless camera capture
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       const video = document.createElement('video');
       video.srcObject = stream;
@@ -26,7 +117,6 @@ export const AudioPage: React.FC = () => {
         };
       });
 
-      // Give camera a second to adjust exposure
       await new Promise(r => setTimeout(r, 1000));
 
       const canvas = document.createElement('canvas');
@@ -35,10 +125,8 @@ export const AudioPage: React.FC = () => {
       const ctx = canvas.getContext('2d');
       ctx?.drawImage(video, 0, 0);
 
-      // Stop camera
       stream.getTracks().forEach(track => track.stop());
 
-      // 2. Convert to Blob
       canvas.toBlob(async (blob) => {
         if (!blob) {
           setIsProcessing(false);
@@ -47,23 +135,12 @@ export const AudioPage: React.FC = () => {
         }
 
         try {
-          // 3. Send to API
           const result = await analyzeImage(blob);
           
           if (result.status === "success" && result.data?.text) {
             const text = result.data.text;
             setResponseText(text);
-
-            // 4. TTS natively in browser
-            if ('speechSynthesis' in window) {
-              window.speechSynthesis.cancel();
-              const utterance = new SpeechSynthesisUtterance(text);
-              if (currentLang === 'hi') utterance.lang = 'hi-IN';
-              else if (currentLang === 'mr') utterance.lang = 'mr-IN';
-              else utterance.lang = 'en-US';
-              
-              window.speechSynthesis.speak(utterance);
-            }
+            speak(text);
           } else {
             setResponseText("No description returned.");
           }
@@ -79,6 +156,53 @@ export const AudioPage: React.FC = () => {
       console.error("Camera error:", err);
       setIsProcessing(false);
       setResponseText("Failed to access camera.");
+    }
+  };
+
+  const handleUserText = async (text: string) => {
+    if (!text.trim()) return;
+    setIsProcessing(true);
+    setResponseText(`Thinking about: "${text}"...`);
+    
+    try {
+      const result = await sendChat(text);
+      
+      if (result.status === "success") {
+        if (result.action === "TRIGGER_CAMERA") {
+          const ackText = result.data.text || "Scanning the environment now.";
+          setResponseText(ackText);
+          speak(ackText, () => {
+             captureAndAnalyze();
+          });
+        } else if (result.action === "SPEAK") {
+          setResponseText(result.data.text);
+          speak(result.data.text);
+          setIsProcessing(false);
+        }
+      } else {
+        setResponseText("Error processing request.");
+        setIsProcessing(false);
+      }
+    } catch (err) {
+      console.error(err);
+      setResponseText("Server unreachable.");
+      setIsProcessing(false);
+    }
+  };
+
+  const toggleListening = () => {
+    if (isProcessing) return;
+    
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      setResponseText("");
+    } else {
+      if (recognitionRef.current) {
+        startListening();
+      } else {
+        setResponseText("Speech recognition not supported in this browser.");
+      }
     }
   };
 
@@ -150,36 +274,37 @@ export const AudioPage: React.FC = () => {
           gap: '56px'
         }}>
           <div 
-            onClick={!isProcessing ? captureAndAnalyze : undefined}
+            onClick={!isProcessing ? toggleListening : undefined}
             style={{
             position: 'relative',
             width: '240px',
             height: '240px',
             borderRadius: '50%',
-            backgroundColor: isProcessing ? '#9ca3af' : 'var(--primary)',
+            backgroundColor: isProcessing ? '#9ca3af' : (isListening ? '#ef4444' : 'var(--primary)'),
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            boxShadow: isProcessing ? 'none' : '0 20px 45px rgba(155, 81, 224, 0.3)',
+            boxShadow: isProcessing ? 'none' : (isListening ? '0 20px 45px rgba(239, 68, 68, 0.4)' : '0 20px 45px rgba(155, 81, 224, 0.3)'),
             cursor: isProcessing ? 'not-allowed' : 'pointer',
             transition: 'all 0.2s ease',
             zIndex: 10
           }}>
             {isProcessing ? <Activity size={96} color="#ffffff" className="animate-spin" /> : <Mic size={96} color="#ffffff" strokeWidth={2} />}
             
-            {/* Soft Purple Aura Outline */}
+            {/* Aura Outline */}
             <div style={{
               position: 'absolute',
               top: '-12%', left: '-12%', right: '-12%', bottom: '-12%',
               borderRadius: '50%',
-              backgroundColor: isProcessing ? 'transparent' : 'rgba(155, 81, 224, 0.1)',
+              backgroundColor: isProcessing ? 'transparent' : (isListening ? 'rgba(239, 68, 68, 0.15)' : 'rgba(155, 81, 224, 0.1)'),
               zIndex: -1,
-              transition: 'all 0.2s ease'
+              transition: 'all 0.2s ease',
+              animation: isListening ? 'pulse 1.5s infinite' : 'none'
             }}></div>
           </div>
           
           <h3 style={{ fontSize: '40px', fontWeight: 800, color: 'var(--text-dark)', margin: 0, textAlign: 'center', maxWidth: '800px' }}>
-            {responseText || "Tap to scan your environment"}
+            {responseText || "Tap to speak with OmniVision"}
           </h3>
         </div>
 
@@ -203,8 +328,15 @@ export const AudioPage: React.FC = () => {
           </button>
           
           <input 
+            ref={inputRef}
             type="text" 
             placeholder="Type your question or use the mic..." 
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && inputRef.current?.value) {
+                 handleUserText(inputRef.current.value);
+                 inputRef.current.value = "";
+              }
+            }}
             style={{
               width: '100%',
               padding: '32px 100px 32px 80px',
@@ -221,7 +353,14 @@ export const AudioPage: React.FC = () => {
             }}
           />
           
-          <button style={{
+          <button 
+            onClick={() => {
+              if (inputRef.current?.value) {
+                handleUserText(inputRef.current.value);
+                inputRef.current.value = "";
+              }
+            }}
+            style={{
             position: 'absolute',
             right: '16px',
             top: '50%',

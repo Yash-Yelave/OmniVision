@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import uvicorn
@@ -112,6 +112,69 @@ async def test_llm_direct(payload: dict):
             raise HTTPException(status_code=503, detail=f"Ollama is unreachable: {str(e)}")
         except httpx.HTTPStatusError as e:
             raise HTTPException(status_code=e.response.status_code, detail=f"Error from Ollama: {e.response.text}")
+
+@app.post("/api/chat")
+async def chat_intent_router(request: Request):
+    """
+    Intent router that determines if the user wants to scan the environment or just chat.
+    Supports both web frontend ('text') and mobile app ('prompt') payloads.
+    """
+    try:
+        payload = await request.json()
+    except Exception as e:
+        raw_body = await request.body()
+        raise HTTPException(status_code=400, detail=f"Failed to parse JSON. Raw body: {raw_body}")
+        
+    print(f"\n[DEBUG] /api/chat received payload: {payload}\n")
+    
+    user_text = payload.get("text", "") or payload.get("prompt", "") or payload.get("message", "")
+    user_text = str(user_text).strip().lower()
+    
+    if not user_text:
+        raise HTTPException(status_code=400, detail=f"No text, prompt, or message provided. Received keys: {list(payload.keys())}")
+        
+    vision_keywords = ["scan", "look", "see", "analyze", "front of me", "environment", "what is this", "what's this", "picture"]
+    
+    is_vision_intent = any(keyword in user_text for keyword in vision_keywords)
+    
+    if is_vision_intent:
+        return {
+            "status": "success",
+            "action": "TRIGGER_CAMERA",
+            "data": {"text": "Scanning the environment now."},
+            "response": "Scanning the environment now." # For mobile app compatibility
+        }
+    else:
+        # Normal Chat - Direct to Ollama to bypass Server 2 route dependencies
+        ollama_url = "http://192.168.0.44:11434/api/generate"
+        prompt_text = (
+            "You are OmniVision, a helpful and friendly accessibility assistant for a visually impaired user. "
+            "Engage in a brief, conversational response to the user's message. "
+            f"User Message: {user_text}"
+        )
+        ollama_payload = {
+            "model": "llava:v1.6",
+            "prompt": prompt_text,
+            "stream": False,
+            "options": {"temperature": 0.7, "top_k": 40}
+        }
+        
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(ollama_url, json=ollama_payload, timeout=30.0)
+                response.raise_for_status()
+                llm_response = response.json().get("response", "")
+                
+                return {
+                    "status": "success",
+                    "action": "SPEAK",
+                    "data": {"text": llm_response},
+                    "response": llm_response # For mobile app compatibility
+                }
+            except httpx.RequestError as e:
+                raise HTTPException(status_code=503, detail=f"Ollama is unavailable: {str(e)}")
+            except httpx.HTTPStatusError as e:
+                raise HTTPException(status_code=502, detail=f"Error from Ollama: {e.response.text}")
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
