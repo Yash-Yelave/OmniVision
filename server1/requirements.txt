@@ -3,3 +3,6 @@ uvicorn
 python-multipart
 httpx
 requests
+websockets
+sqlalchemy
+psycopg2-binary

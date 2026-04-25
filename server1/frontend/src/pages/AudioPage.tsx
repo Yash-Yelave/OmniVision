@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Mic, Send, Activity } from 'lucide-react';
-import { analyzeImage, sendChat } from '../api/server1';
+import { analyzeImage, sendChat, BASE_URL } from '../api/server1';
 import '../styles/global.css';
 
 declare global {
@@ -103,7 +103,7 @@ export const AudioPage: React.FC = () => {
 
   const captureAndAnalyze = async () => {
     setIsProcessing(true);
-    setResponseText((prev) => prev || "Capturing and analyzing scene...");
+    setResponseText((prev) => prev || "Connecting to continuous video stream...");
     
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
@@ -117,40 +117,56 @@ export const AudioPage: React.FC = () => {
         };
       });
 
-      await new Promise(r => setTimeout(r, 1000));
-
       const canvas = document.createElement('canvas');
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       const ctx = canvas.getContext('2d');
-      ctx?.drawImage(video, 0, 0);
 
-      stream.getTracks().forEach(track => track.stop());
+      // Open WebSocket connection to the Gateway (Server 1 -> Server 2)
+      // Extract the hostname from BASE_URL to ensure mobile devices don't try to connect to their own localhost
+      const wsHost = new URL(BASE_URL).hostname;
+      const ws = new WebSocket(`ws://${wsHost}:8002/api/stream`);
+      
+      ws.onopen = () => {
+        setResponseText("Streaming to Server 2...");
+        setIsProcessing(false);
+        
+        // Start sending frames continuously every 2 seconds
+        setInterval(() => {
+          ctx?.drawImage(video, 0, 0);
+          canvas.toBlob((blob) => {
+            if (blob && ws.readyState === WebSocket.OPEN) {
+              ws.send(blob);
+            }
+          }, 'image/jpeg', 0.5);
+        }, 2000);
+      };
 
-      canvas.toBlob(async (blob) => {
-        if (!blob) {
-          setIsProcessing(false);
-          setResponseText("Failed to process image.");
-          return;
-        }
-
+      ws.onmessage = (event) => {
         try {
-          const result = await analyzeImage(blob);
-          
-          if (result.status === "success" && result.data?.text) {
-            const text = result.data.text;
-            setResponseText(text);
-            speak(text);
-          } else {
-            setResponseText("No description returned.");
+          const result = JSON.parse(event.data);
+          if (result.text) {
+             setResponseText(result.text);
+             // Only speak if not currently speaking to avoid overlapping chaos
+             if (!window.speechSynthesis.speaking) {
+                speak(result.text);
+             }
           }
-        } catch (apiError) {
-          console.error("Analyze API error:", apiError);
-          setResponseText("Sorry, Server 1 is offline or unreachable.");
-        } finally {
-          setIsProcessing(false);
+        } catch (e) {
+          console.error("Invalid WS JSON", e);
         }
-      }, 'image/jpeg');
+      };
+
+      ws.onerror = (error) => {
+        console.error("WebSocket Error:", error);
+        setResponseText("Streaming error. Is gateway.py running on 8002?");
+        setIsProcessing(false);
+      };
+      
+      ws.onclose = () => {
+        console.log("WebSocket stream closed.");
+        stream.getTracks().forEach(track => track.stop());
+      };
 
     } catch (err) {
       console.error("Camera error:", err);

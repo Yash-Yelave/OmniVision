@@ -155,8 +155,7 @@ async def chat_intent_router(request: Request):
         ollama_payload = {
             "model": "llava:v1.6",
             "prompt": prompt_text,
-            "stream": False,
-            "options": {"temperature": 0.7, "top_k": 40}
+            "stream": False
         }
         
         async with httpx.AsyncClient() as client:
