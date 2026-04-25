@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Hand, Volume2, Activity } from 'lucide-react';
+import { sendGesture } from '../api/server1';
 import '../styles/global.css';
 
 export const GesturePage: React.FC = () => {
@@ -85,16 +86,49 @@ export const GesturePage: React.FC = () => {
     }
   };
 
-  const handleStartRecognition = () => {
+  const captureFrame = () => {
+    if (videoRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth;
+      canvas.height = videoRef.current.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL('image/jpeg');
+      }
+    }
+    return null;
+  };
+
+  const handleStartRecognition = async () => {
     if (!isCameraActive) {
       startCamera();
     }
     setIsRecognizing(true);
-    setTimeout(() => {
-      const randomGesture = gestures[Math.floor(Math.random() * gestures.length)];
-      triggerGesture(randomGesture);
+    
+    try {
+      // Capture frame from the live video element
+      const frameData = captureFrame();
+      // Server expects JSON payload with "frames" array
+      const frames = frameData ? [{ image: frameData }] : [{ x: 0, y: 0 }];
+      
+      const response = await sendGesture(frames);
+      const action = response.action; // e.g., "TRIGGER_SCAN"
+      
+      // Match the backend action string to our frontend UI list
+      let matched = gestures.find(g => 
+        g.name.toUpperCase().includes(action.replace('TRIGGER_', '')) || 
+        action.includes(g.name.toUpperCase())
+      );
+      
+      if (!matched) matched = gestures[0]; // fallback
+      
+      triggerGesture(matched);
+    } catch (error) {
+      console.error("Gesture API Error:", error);
+    } finally {
       setIsRecognizing(false);
-    }, 2500);
+    }
   };
 
   return (

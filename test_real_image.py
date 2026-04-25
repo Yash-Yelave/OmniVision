@@ -6,7 +6,7 @@ import os
 # 🔧 CONFIGURATION
 # Update this string to the absolute path of your real image!
 # Example: "C:/Users/yashy/Downloads/test_scene.jpg"
-IMAGE_PATH = "test-Image3.jpg" 
+IMAGE_PATH = "test-Image2.png" 
 
 # We test the full flow by hitting Server 1 (Gateway)
 # Server 1 will automatically forward it to Server 2 (192.168.0.44)

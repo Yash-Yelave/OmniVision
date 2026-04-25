@@ -1,9 +1,86 @@
-import React, { useState } from 'react';
-import { Mic, Send } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Mic, Send, Activity } from 'lucide-react';
+import { analyzeImage } from '../api/server1';
 import '../styles/global.css';
 
 export const AudioPage: React.FC = () => {
   const [currentLang, setCurrentLang] = useState<'en'|'hi'|'mr'>('en');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [responseText, setResponseText] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const captureAndAnalyze = async () => {
+    setIsProcessing(true);
+    setResponseText("Capturing and analyzing scene...");
+    
+    try {
+      // 1. Headless camera capture
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      const video = document.createElement('video');
+      video.srcObject = stream;
+      
+      await new Promise((resolve) => {
+        video.onloadedmetadata = () => {
+          video.play();
+          resolve(true);
+        };
+      });
+
+      // Give camera a second to adjust exposure
+      await new Promise(r => setTimeout(r, 1000));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx?.drawImage(video, 0, 0);
+
+      // Stop camera
+      stream.getTracks().forEach(track => track.stop());
+
+      // 2. Convert to Blob
+      canvas.toBlob(async (blob) => {
+        if (!blob) {
+          setIsProcessing(false);
+          setResponseText("Failed to process image.");
+          return;
+        }
+
+        try {
+          // 3. Send to API
+          const result = await analyzeImage(blob);
+          
+          if (result.status === "success" && result.data?.text) {
+            const text = result.data.text;
+            setResponseText(text);
+
+            // 4. TTS natively in browser
+            if ('speechSynthesis' in window) {
+              window.speechSynthesis.cancel();
+              const utterance = new SpeechSynthesisUtterance(text);
+              if (currentLang === 'hi') utterance.lang = 'hi-IN';
+              else if (currentLang === 'mr') utterance.lang = 'mr-IN';
+              else utterance.lang = 'en-US';
+              
+              window.speechSynthesis.speak(utterance);
+            }
+          } else {
+            setResponseText("No description returned.");
+          }
+        } catch (apiError) {
+          console.error("Analyze API error:", apiError);
+          setResponseText("Sorry, Server 1 is offline or unreachable.");
+        } finally {
+          setIsProcessing(false);
+        }
+      }, 'image/jpeg');
+
+    } catch (err) {
+      console.error("Camera error:", err);
+      setIsProcessing(false);
+      setResponseText("Failed to access camera.");
+    }
+  };
 
   return (
     <div className="animate-fade-in" style={{ 
@@ -72,34 +149,37 @@ export const AudioPage: React.FC = () => {
           alignItems: 'center',
           gap: '56px'
         }}>
-          <div style={{
+          <div 
+            onClick={!isProcessing ? captureAndAnalyze : undefined}
+            style={{
             position: 'relative',
             width: '240px',
             height: '240px',
             borderRadius: '50%',
-            backgroundColor: 'var(--primary)',
+            backgroundColor: isProcessing ? '#9ca3af' : 'var(--primary)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            boxShadow: '0 20px 45px rgba(155, 81, 224, 0.3)',
-            cursor: 'pointer',
-            transition: 'transform 0.2s ease',
+            boxShadow: isProcessing ? 'none' : '0 20px 45px rgba(155, 81, 224, 0.3)',
+            cursor: isProcessing ? 'not-allowed' : 'pointer',
+            transition: 'all 0.2s ease',
             zIndex: 10
           }}>
-            <Mic size={96} color="#ffffff" strokeWidth={2} />
+            {isProcessing ? <Activity size={96} color="#ffffff" className="animate-spin" /> : <Mic size={96} color="#ffffff" strokeWidth={2} />}
             
             {/* Soft Purple Aura Outline */}
             <div style={{
               position: 'absolute',
               top: '-12%', left: '-12%', right: '-12%', bottom: '-12%',
               borderRadius: '50%',
-              backgroundColor: 'rgba(155, 81, 224, 0.1)',
-              zIndex: -1
+              backgroundColor: isProcessing ? 'transparent' : 'rgba(155, 81, 224, 0.1)',
+              zIndex: -1,
+              transition: 'all 0.2s ease'
             }}></div>
           </div>
           
-          <h3 style={{ fontSize: '40px', fontWeight: 800, color: 'var(--text-dark)', margin: 0 }}>
-            How can I help you?
+          <h3 style={{ fontSize: '40px', fontWeight: 800, color: 'var(--text-dark)', margin: 0, textAlign: 'center', maxWidth: '800px' }}>
+            {responseText || "Tap to scan your environment"}
           </h3>
         </div>
 
