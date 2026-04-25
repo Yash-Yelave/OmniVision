@@ -1,73 +1,71 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-import uvicorn
+import os
+import requests
 import base64
+import ollama
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Server 2: ML Compute Engine")
+app = FastAPI(title="Server 2: ML Compute Engine (Lightweight)")
 
-# ==========================================
-# Placeholder ML Functions
-# ==========================================
+# Explicit CORS configuration for Server 1
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://192.168.0.140:8000", "*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def run_yolov8(image_bytes: bytes) -> list:
-    print("[ML Pipeline] 1. Running YOLOv8 object detection...")
-    return ["park bench", "tree"]
+def run_yolov8(image_path: str) -> list:
+    """Dummy YOLOv8 function returning mocked labels."""
+    return ["person", "car", "stop_sign"]
 
-def run_llava(image_bytes: bytes, objects: list) -> str:
-    print(f"[ML Pipeline] 2. Running LLaVA (via Ollama) with context objects: {objects}...")
-    return "There is a park bench three meters ahead."
-
-def run_local_tts(text: str) -> str:
-    print(f"[ML Pipeline] 3. Running Piper/Coqui TTS for text: '{text}'...")
-    dummy_wav_data = b"RIFF dummy wav data for " + text.encode('utf-8')
-    return base64.b64encode(dummy_wav_data).decode("utf-8")
-
-# ==========================================
-# API Routes
-# ==========================================
+def run_llava(image_path: str, labels: list) -> str:
+    objects_str = ", ".join(labels) if labels else "none"
+    
+    prompt_text = (
+        "You are a strict navigational assistant for a visually impaired user. "
+        "Provide a concise, direct description in under 3 sentences. "
+        "Focus strictly on immediate spatial awareness (e.g., 'straight ahead', 'to your left'). "
+        "Prioritize identifying hazards, obstacles, and path clearance. "
+        f"Factually integrate the following objects detected in the scene: [{objects_str}]. "
+        "Do NOT make up or hallucinate objects that are not there."
+    )
+    
+    # Ping local Ollama instance
+    ollama_client = ollama.Client(host='http://localhost:11434')
+    response = ollama_client.generate(
+        model='llava:v1.6',
+        prompt=prompt_text,
+        images=[image_path],
+        options={'temperature': 0.2, 'top_k': 40}
+    )
+    return response.get('response', '')
 
 @app.post("/internal/full-pipeline")
 async def full_pipeline(file: UploadFile = File(...)):
     """
-    Chains YOLOv8 -> LLaVA -> TTS sequentially.
+    Reduced pipeline: YOLOv8 -> Ollama/LLaVA.
+    Returns ONLY the text description. TTS is handled by the mobile app.
     """
-    image_bytes = await file.read()
+    temp_image_path = f"temp_{file.filename}"
     
-    # Step 1: Detect objects
-    objects = run_yolov8(image_bytes)
-    
-    # Step 2: Get scene description
-    description = run_llava(image_bytes, objects)
-    
-    # Step 3: Convert description to audio
-    audio_b64 = run_local_tts(description)
-    
-    return {
-        "text": description,
-        "audio_base64": audio_b64
-    }
-
-@app.post("/internal/detect")
-async def detect_objects(file: UploadFile = File(...)):
-    """Runs YOLOv8 only."""
-    image_bytes = await file.read()
-    objects = run_yolov8(image_bytes)
-    return {"detected_objects": objects}
-
-@app.post("/internal/describe")
-async def describe_scene(file: UploadFile = File(...)):
-    """Runs LLaVA only."""
-    image_bytes = await file.read()
-    description = run_llava(image_bytes, ["unknown object"])
-    return {"text": description}
-
-@app.post("/internal/tts")
-async def generate_audio(payload: dict):
-    """Runs Local TTS only."""
-    text = payload.get("text", "")
-    if not text:
-        raise HTTPException(status_code=400, detail="No text provided")
-    audio_b64 = run_local_tts(text)
-    return {"audio_base64": audio_b64}
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)
+    try:
+        # Save image temporarily
+        with open(temp_image_path, "wb") as f:
+            f.write(await file.read())
+            
+        # 1. Object Detection (Mocked)
+        labels = run_yolov8(temp_image_path)
+        
+        # 2. Scene Description (Ping Ollama / Mocked)
+        description = run_llava(temp_image_path, labels)
+        
+        # Return strictly JSON with only "text"
+        return JSONResponse(content={"text": description})
+        
+    finally:
+        # Cleanup
+        if os.path.exists(temp_image_path):
+            os.remove(temp_image_path)

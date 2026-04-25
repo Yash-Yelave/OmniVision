@@ -1,0 +1,8 @@
+.server2_env/
+__pycache__/
+*.onnx
+*.onnx.json
+*.pt
+*.wav
+*.jpg
+temp_*
