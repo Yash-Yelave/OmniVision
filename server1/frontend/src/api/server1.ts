@@ -1,4 +1,5 @@
-export const BASE_URL = 'http://192.168.0.140:8000';
+// Using relative path so requests go through the Vite proxy (fixes mixed content HTTPS errors)
+export const BASE_URL = '';
 
 export const analyzeImage = async (imageFile: File | Blob) => {
   const formData = new FormData();

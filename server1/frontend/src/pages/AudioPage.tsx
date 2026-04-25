@@ -19,56 +19,29 @@ export const AudioPage: React.FC = () => {
   
   const recognitionRef = useRef<any>(null);
 
+  // Reference to hold the video stream so we can stop it
+  const streamRef = useRef<MediaStream | null>(null);
+  const isTrackingRef = useRef<boolean>(false);
+
   useEffect(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false;
-      recognitionRef.current.interimResults = false;
-      
-      recognitionRef.current.onresult = (event: any) => {
-        const transcript = event.results[0][0].transcript;
-        setResponseText(`You: "${transcript}"`);
-        setIsListening(false);
-        handleUserText(transcript);
-      };
-      
-      recognitionRef.current.onerror = (event: any) => {
-        console.error("Speech recognition error:", event.error);
-        setIsListening(false);
-        if (event.error === 'not-allowed') {
-          setResponseText("Microphone access denied or insecure connection. (HTTPS required on mobile).");
-        } else if (event.error === 'network') {
-          setResponseText("Network error during speech recognition.");
-        } else if (event.error === 'no-speech') {
-          setResponseText("No speech detected. Please try again.");
-        } else {
-          setResponseText(`Speech error: ${event.error}. Try again.`);
-        }
-      };
-      
-      recognitionRef.current.onend = () => {
-        setIsListening(false);
-      };
-      
-    } else {
-      setResponseText("Speech recognition not supported in this browser.");
-    }
+    // SpeechRecognition removed to prevent network errors
   }, []);
 
-  const startListening = () => {
-    if (recognitionRef.current && !isProcessing) {
-      if (currentLang === 'hi') recognitionRef.current.lang = 'hi-IN';
-      else if (currentLang === 'mr') recognitionRef.current.lang = 'mr-IN';
-      else recognitionRef.current.lang = 'en-US';
-      
-      try {
-        recognitionRef.current.start();
-        setIsListening(true);
-        setResponseText("Listening...");
-      } catch (err) {
-        console.error("Could not start recognition", err);
+  const toggleTracking = () => {
+    if (isTrackingRef.current) {
+      // Stop tracking
+      isTrackingRef.current = false;
+      setIsListening(false);
+      setResponseText("Tracking stopped. Tap to resume.");
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
+    } else {
+      // Start tracking
+      isTrackingRef.current = true;
+      setIsListening(true);
+      captureAndAnalyzeLoop();
     }
   };
 
@@ -101,12 +74,13 @@ export const AudioPage: React.FC = () => {
     }
   };
 
-  const captureAndAnalyze = async () => {
+  const captureAndAnalyzeLoop = async () => {
+    setResponseText("Initializing continuous tracker...");
     setIsProcessing(true);
-    setResponseText((prev) => prev || "Connecting to continuous video stream...");
     
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      streamRef.current = stream;
       const video = document.createElement('video');
       video.srcObject = stream;
       
@@ -121,56 +95,53 @@ export const AudioPage: React.FC = () => {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       const ctx = canvas.getContext('2d');
+      setIsProcessing(false);
+      setResponseText("Tracking active. Analyzing...");
 
-      // Open WebSocket connection to the Gateway (Server 1 -> Server 2)
-      // Extract the hostname from BASE_URL to ensure mobile devices don't try to connect to their own localhost
-      const wsHost = new URL(BASE_URL).hostname;
-      const ws = new WebSocket(`ws://${wsHost}:8002/api/stream`);
-      
-      ws.onopen = () => {
-        setResponseText("Streaming to Server 2...");
-        setIsProcessing(false);
+      const processFrame = async () => {
+        if (!isTrackingRef.current) return;
         
-        // Start sending frames continuously every 2 seconds
-        setInterval(() => {
-          ctx?.drawImage(video, 0, 0);
-          canvas.toBlob((blob) => {
-            if (blob && ws.readyState === WebSocket.OPEN) {
-              ws.send(blob);
+        ctx?.drawImage(video, 0, 0);
+
+        canvas.toBlob(async (blob) => {
+          if (!blob || !isTrackingRef.current) return;
+
+          try {
+            const result = await analyzeImage(blob);
+            
+            if (result.status === "success" && result.data?.text) {
+              const text = result.data.text;
+              setResponseText(text);
+              speak(text);
             }
-          }, 'image/jpeg', 0.5);
-        }, 2000);
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const result = JSON.parse(event.data);
-          if (result.text) {
-             setResponseText(result.text);
-             // Only speak if not currently speaking to avoid overlapping chaos
-             if (!window.speechSynthesis.speaking) {
-                speak(result.text);
-             }
+          } catch (apiError) {
+            console.error("Analyze API error:", apiError);
+            if (isTrackingRef.current) setResponseText("Connecting to Server 2...");
           }
-        } catch (e) {
-          console.error("Invalid WS JSON", e);
-        }
+          
+          // Buffer System: Wait for speech to finish before taking the next picture!
+          if (isTrackingRef.current) {
+            const scheduleNext = () => {
+              if (!isTrackingRef.current) return;
+              if (window.speechSynthesis.speaking) {
+                setTimeout(scheduleNext, 500); // Wait another half second if still talking
+              } else {
+                setTimeout(processFrame, 1000); // 1 second breath after talking before next scan
+              }
+            };
+            scheduleNext();
+          }
+        }, 'image/jpeg', 0.5);
       };
 
-      ws.onerror = (error) => {
-        console.error("WebSocket Error:", error);
-        setResponseText("Streaming error. Is gateway.py running on 8002?");
-        setIsProcessing(false);
-      };
-      
-      ws.onclose = () => {
-        console.log("WebSocket stream closed.");
-        stream.getTracks().forEach(track => track.stop());
-      };
+      // Start the recursive loop
+      processFrame();
 
     } catch (err) {
       console.error("Camera error:", err);
       setIsProcessing(false);
+      setIsListening(false);
+      isTrackingRef.current = false;
       setResponseText("Failed to access camera.");
     }
   };
@@ -206,21 +177,6 @@ export const AudioPage: React.FC = () => {
     }
   };
 
-  const toggleListening = () => {
-    if (isProcessing) return;
-    
-    if (isListening) {
-      recognitionRef.current?.stop();
-      setIsListening(false);
-      setResponseText("");
-    } else {
-      if (recognitionRef.current) {
-        startListening();
-      } else {
-        setResponseText("Speech recognition not supported in this browser.");
-      }
-    }
-  };
 
   return (
     <div className="animate-fade-in" style={{ 
@@ -290,7 +246,7 @@ export const AudioPage: React.FC = () => {
           gap: '56px'
         }}>
           <div 
-            onClick={!isProcessing ? toggleListening : undefined}
+            onClick={!isProcessing ? toggleTracking : undefined}
             style={{
             position: 'relative',
             width: '240px',
@@ -305,7 +261,7 @@ export const AudioPage: React.FC = () => {
             transition: 'all 0.2s ease',
             zIndex: 10
           }}>
-            {isProcessing ? <Activity size={96} color="#ffffff" className="animate-spin" /> : <Mic size={96} color="#ffffff" strokeWidth={2} />}
+            {isProcessing ? <Activity size={96} color="#ffffff" className="animate-spin" /> : <Activity size={96} color="#ffffff" strokeWidth={2} />}
             
             {/* Aura Outline */}
             <div style={{
@@ -320,7 +276,7 @@ export const AudioPage: React.FC = () => {
           </div>
           
           <h3 style={{ fontSize: '40px', fontWeight: 800, color: 'var(--text-dark)', margin: 0, textAlign: 'center', maxWidth: '800px' }}>
-            {responseText || "Tap to speak with OmniVision"}
+            {responseText || "Tap to Start Tracking"}
           </h3>
         </div>
 

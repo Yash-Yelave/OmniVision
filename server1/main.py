@@ -16,6 +16,10 @@ app.add_middleware(
 
 SERVER2_URL = "http://192.168.0.44:8001"
 
+# Import and include the new Geo-Memory Router
+from geo_memory import router as geo_router
+app.include_router(geo_router)
+
 @app.post("/api/analyze")
 async def analyze_image(file: UploadFile = File(...)):
     """
