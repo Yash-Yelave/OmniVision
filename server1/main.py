@@ -14,13 +14,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SERVER2_URL = "http://localhost:8001"
+SERVER2_URL = "http://192.168.0.44:8001"
 
 @app.post("/api/analyze")
 async def analyze_image(file: UploadFile = File(...)):
     """
     Accepts an image and asynchronously forwards it to Server 2's full-pipeline.
-    Returns the exact JSON payload (text and audio_base64) back to the client.
+    Returns the exact JSON payload with text description. Audio processing is moved to edge.
     """
     async with httpx.AsyncClient() as client:
         try:
@@ -30,7 +30,14 @@ async def analyze_image(file: UploadFile = File(...)):
             response = await client.post(f"{SERVER2_URL}/internal/full-pipeline", files=files, timeout=60.0)
             response.raise_for_status()
             
-            return response.json()
+            server2_data = response.json()
+            
+            return {
+                "status": "success",
+                "data": {
+                    "text": server2_data.get("text", "")
+                }
+            }
             
         except httpx.RequestError as e:
             raise HTTPException(status_code=503, detail=f"Server 2 is unavailable: {str(e)}")
@@ -81,6 +88,30 @@ async def report_hazard(payload: dict):
     
     print(f"[DB MOCK] Saved hazard '{hazard_type}' at location: lat={lat}, lng={lng}")
     return {"status": "success"}
+
+@app.post("/api/test-llm")
+async def test_llm_direct(payload: dict):
+    prompt = payload.get("prompt", "")
+    if not prompt:
+        raise HTTPException(status_code=400, detail="No prompt provided")
+        
+    ollama_url = "http://192.168.0.44:11434/api/generate"
+    ollama_payload = {
+        "model": "llava:v1.6",
+        "prompt": prompt,
+        "stream": False
+    }
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(ollama_url, json=ollama_payload, timeout=60.0)
+            response.raise_for_status()
+            llm_response = response.json().get("response", "")
+            return {"response": llm_response}
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=503, detail=f"Ollama is unreachable: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=f"Error from Ollama: {e.response.text}")
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
