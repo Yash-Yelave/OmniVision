@@ -36,6 +36,10 @@ app.add_middleware(
 SERVER2_URL = os.getenv("SERVER2_URL", "http://192.168.0.44:8001").rstrip("/")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://192.168.0.44:11434/api/generate")
 
+# Import and include the new Geo-Memory Router
+from geo_memory import router as geo_router
+app.include_router(geo_router)
+
 @app.post("/api/analyze")
 async def analyze_image(file: UploadFile = File(...)):
     """
@@ -173,8 +177,7 @@ async def chat_intent_router(request: Request):
         ollama_payload = {
             "model": "llava:v1.6",
             "prompt": prompt_text,
-            "stream": False,
-            "options": {"temperature": 0.7, "top_k": 40}
+            "stream": False
         }
         
         async with httpx.AsyncClient() as client:

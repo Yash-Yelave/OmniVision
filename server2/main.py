@@ -219,3 +219,28 @@ async def websocket_endpoint(websocket: WebSocket):
             del cooldowns[conn_id]
         if conn_id in scan_timers:
             del scan_timers[conn_id]
+
+@app.post("/internal/chat")
+async def internal_chat(payload: dict):
+    """
+    Handles pure conversational text without processing an image.
+    Pings the local Ollama instance for a conversational response.
+    """
+    user_text = payload.get("text", "")
+    prompt_text = (
+        "You are OmniVision, a helpful and friendly accessibility assistant for a visually impaired user. "
+        "Engage in a brief, conversational response to the user's message. "
+        f"User Message: {user_text}"
+    )
+    ollama_payload = {
+        "model": "llava:v1.6",
+        "prompt": prompt_text,
+        "stream": False,
+        "options": {"temperature": 0.7, "top_k": 40}
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post('http://localhost:11434/api/generate', json=ollama_payload, timeout=60.0)
+        response.raise_for_status()
+        data = response.json()
+        return JSONResponse(content={"text": data.get("response", "").strip()})
