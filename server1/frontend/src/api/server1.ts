@@ -1,4 +1,4 @@
-export const BASE_URL = 'http://192.168.0.140:8000';
+export const BASE_URL = import.meta.env.VITE_SERVER1_URL || 'http://192.168.0.140:8000';
 
 export const analyzeImage = async (imageFile: File | Blob) => {
   const formData = new FormData();

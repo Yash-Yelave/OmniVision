@@ -1,7 +1,26 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+import os
 import uvicorn
+
+
+def load_env_file(filename: str = ".env") -> None:
+    env_path = os.path.join(os.path.dirname(__file__), filename)
+    if not os.path.exists(env_path):
+        return
+
+    with open(env_path, "r", encoding="utf-8") as env_file:
+        for line in env_file:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+load_env_file()
 
 app = FastAPI(title="Server 1: API Gateway & Gesture Engine")
 
@@ -14,7 +33,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SERVER2_URL = "http://192.168.0.44:8001"
+SERVER2_URL = os.getenv("SERVER2_URL", "http://192.168.0.44:8001").rstrip("/")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://192.168.0.44:11434/api/generate")
 
 @app.post("/api/analyze")
 async def analyze_image(file: UploadFile = File(...)):
@@ -95,7 +115,6 @@ async def test_llm_direct(payload: dict):
     if not prompt:
         raise HTTPException(status_code=400, detail="No prompt provided")
         
-    ollama_url = "http://192.168.0.44:11434/api/generate"
     ollama_payload = {
         "model": "llava:v1.6",
         "prompt": prompt,
@@ -104,7 +123,7 @@ async def test_llm_direct(payload: dict):
     
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(ollama_url, json=ollama_payload, timeout=60.0)
+            response = await client.post(OLLAMA_URL, json=ollama_payload, timeout=60.0)
             response.raise_for_status()
             llm_response = response.json().get("response", "")
             return {"response": llm_response}
@@ -146,7 +165,6 @@ async def chat_intent_router(request: Request):
         }
     else:
         # Normal Chat - Direct to Ollama to bypass Server 2 route dependencies
-        ollama_url = "http://192.168.0.44:11434/api/generate"
         prompt_text = (
             "You are OmniVision, a helpful and friendly accessibility assistant for a visually impaired user. "
             "Engage in a brief, conversational response to the user's message. "
@@ -161,7 +179,7 @@ async def chat_intent_router(request: Request):
         
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(ollama_url, json=ollama_payload, timeout=30.0)
+                response = await client.post(OLLAMA_URL, json=ollama_payload, timeout=30.0)
                 response.raise_for_status()
                 llm_response = response.json().get("response", "")
                 
